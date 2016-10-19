@@ -16,14 +16,22 @@ const notify = require('./notify');
 const cache = new Config();
 
 // modules path
-const path = resolve(homedir(), '.hyperterm_plugins');
-const localPath = resolve(homedir(), '.hyperterm_plugins', 'local');
+const path = resolve(homedir(), '.hyper_plugins');
+const localPath = resolve(homedir(), '.hyper_plugins', 'local');
 const availableExtensions = new Set([
   'onApp', 'onWindow', 'onUnload', 'middleware',
-  'reduceUI', 'reduceSessions', 'decorateMenu',
-  'decorateTerm', 'decorateHyperTerm', 'decorateTab',
+  'reduceUI', 'reduceSessions', 'reduceTermGroups',
+  'decorateMenu', 'decorateTerm', 'decorateHyper',
+  'decorateHyperTerm', // for backwards compatibility with hyperterm
+  'decorateTab',
   'decorateNotification', 'decorateNotifications',
-  'decorateTabs', 'decorateConfig', 'decorateEnv'
+  'decorateTabs', 'decorateConfig', 'decorateEnv',
+  'decorateTermGroup', 'getTermProps',
+  'getTabProps', 'getTabsProps', 'getTermGroupProps',
+  'mapHyperTermState', 'mapTermsState',
+  'mapHeaderState', 'mapNotificationsState',
+  'mapHyperTermDispatch', 'mapTermsDispatch',
+  'mapHeaderDispatch', 'mapNotificationsDispatch'
 ]);
 
 // init plugin directories if not present
@@ -78,12 +86,12 @@ function updatePlugins({force = false} = {}) {
       } else {
         notify(
           'Error updating plugins.',
-          'Check `~/.hyperterm_plugins/npm-debug.log` for more information.'
+          'Check `~/.hyper_plugins/npm-debug.log` for more information.'
         );
       }
     } else {
       // flag successful plugin update
-      cache.set('hyperterm.plugins', id_);
+      cache.set('hyper.plugins', id_);
 
       // cache paths
       paths = getPaths(plugins);
@@ -97,8 +105,8 @@ function updatePlugins({force = false} = {}) {
       const loaded = modules.length;
       const total = paths.plugins.length + paths.localPlugins.length;
       const pluginVersions = JSON.stringify(getPluginVersions());
-      const changed = cache.get('hyperterm.plugin-versions') !== pluginVersions && loaded === total;
-      cache.set('hyperterm.plugin-versions', pluginVersions);
+      const changed = cache.get('hyper.plugin-versions') !== pluginVersions && loaded === total;
+      cache.set('hyper.plugin-versions', pluginVersions);
 
       // notify watchers
       if (force || changed) {
@@ -124,6 +132,7 @@ function getPluginVersions() {
   return paths_.map(path => {
     let version = null;
     try {
+      // eslint-disable-next-line import/no-dynamic-require
       version = require(resolve(path, 'package.json')).version;
     } catch (err) { }
     return [
@@ -154,7 +163,7 @@ exports.updatePlugins = updatePlugins;
 // we schedule the initial plugins update
 // a bit after the user launches the terminal
 // to prevent slowness
-if (cache.get('hyperterm.plugins') !== id || process.env.HYPERTERM_FORCE_UPDATE) {
+if (cache.get('hyper.plugins') !== id || process.env.HYPER_FORCE_UPDATE) {
   // install immediately if the user changed plugins
   console.log('plugins have changed / not init, scheduling plugins installation');
   setTimeout(() => {
@@ -168,13 +177,13 @@ setInterval(updatePlugins, ms('5h'));
 function syncPackageJSON() {
   const dependencies = toDependencies(plugins);
   const pkg = {
-    name: 'hyperterm-plugins',
-    description: 'Auto-generated from `~/.hyperterm.js`!',
+    name: 'hyper-plugins',
+    description: 'Auto-generated from `~/.hyper.js`!',
     private: true,
     version: '0.0.1',
-    repository: 'zeit/hyperterm',
+    repository: 'zeit/hyper',
     license: 'MIT',
-    homepage: 'https://hyperterm.org',
+    homepage: 'https://hyper.is',
     dependencies
   };
 
@@ -272,11 +281,12 @@ function requirePlugins() {
   const load = path => {
     let mod;
     try {
+      // eslint-disable-next-line import/no-dynamic-require
       mod = require(path);
       const exposed = mod && Object.keys(mod).some(key => availableExtensions.has(key));
       if (!exposed) {
         notify('Plugin error!', `Plugin "${basename(path)}" does not expose any ` +
-          'HyperTerm extension API methods');
+          'Hyper extension API methods');
         return;
       }
 

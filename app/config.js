@@ -1,13 +1,23 @@
 const {homedir} = require('os');
-const {readFileSync, writeFileSync} = require('fs');
+const {statSync, renameSync, readFileSync, writeFileSync} = require('fs');
 const {resolve} = require('path');
 const vm = require('vm');
 
 const {dialog} = require('electron');
 const gaze = require('gaze');
+const Config = require('electron-config');
 const notify = require('./notify');
 
-const path = resolve(homedir(), '.hyperterm.js');
+// local storage
+const winCfg = new Config({
+  defaults: {
+    windowPosition: [50, 50],
+    windowSize: [540, 380]
+  }
+});
+
+const path = resolve(homedir(), '.hyper.js');
+const pathLegacy = resolve(homedir(), '.hyperterm.js');
 const watchers = [];
 
 let cfg = {};
@@ -20,7 +30,7 @@ function watch() {
     this.on('changed', () => {
       try {
         if (exec(readFileSync(path, 'utf8'))) {
-          notify('HyperTerm configuration reloaded!');
+          notify('Hyper configuration reloaded!');
           watchers.forEach(fn => fn());
         }
       } catch (err) {
@@ -29,6 +39,9 @@ function watch() {
           buttons: ['Ok']
         });
       }
+    });
+    this.on('error', () => {
+      // Ignore file watching errors
     });
   });
 }
@@ -63,6 +76,16 @@ exports.subscribe = function (fn) {
 };
 
 exports.init = function () {
+  // for backwards compatibility with hyperterm
+  // (prior to the rename), we try to rename
+  // on behalf of the user
+  try {
+    statSync(pathLegacy);
+    renameSync(pathLegacy, path);
+  } catch (err) {
+    // ignore
+  }
+
   try {
     exec(readFileSync(path, 'utf8'));
   } catch (err) {
@@ -88,4 +111,16 @@ exports.getPlugins = function () {
     plugins: cfg.plugins,
     localPlugins: cfg.localPlugins
   };
+};
+
+exports.window = {
+  get() {
+    const position = winCfg.get('windowPosition');
+    const size = winCfg.get('windowSize');
+    return {position, size};
+  },
+  recordState(win) {
+    winCfg.set('windowPosition', win.getPosition());
+    winCfg.set('windowSize', win.getSize());
+  }
 };

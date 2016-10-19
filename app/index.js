@@ -3,8 +3,8 @@ const {resolve} = require('path');
 
 // Packages
 const {parse: parseUrl} = require('url');
-const {gitDescribe} = require('git-describe');
 const {app, BrowserWindow, shell, Menu} = require('electron');
+const {gitDescribe} = require('git-describe');
 const uuid = require('uuid');
 const fileUriToPath = require('file-uri-to-path');
 const isDev = require('electron-is-dev');
@@ -15,6 +15,7 @@ const toElectronBackgroundColor = require('./utils/to-electron-background-color'
 const createMenu = require('./menu');
 const createRPC = require('./rpc');
 const notify = require('./notify');
+const fetchNotifications = require('./notifications');
 
 app.commandLine.appendSwitch('js-flags', '--harmony');
 
@@ -33,7 +34,7 @@ app.config = config;
 app.plugins = plugins;
 app.getWindows = () => new Set([...windowSet]); // return a clone
 
-// function to retrive the last focused window in windowSet;
+// function to retrieve the last focused window in windowSet;
 // added to app object in order to expose it to plugins.
 app.getLastFocusedWindow = () => {
   if (!windowSet.size) {
@@ -65,20 +66,25 @@ const url = 'file://' + resolve(
 console.log('electron will open', url);
 
 app.on('ready', () => installDevExtensions(isDev).then(() => {
-  function createWindow(fn) {
+  function createWindow(fn, options = {}) {
     let cfg = plugins.getDecoratedConfig();
 
-    const [width, height] = cfg.windowSize || [540, 380];
+    const winSet = app.config.window.get();
+    let [startX, startY] = winSet.position;
+
+    const [width, height] = options.size ? options.size : (cfg.windowSize || winSet.size);
     const {screen} = require('electron');
 
-    let startX = 50;
-    let startY = 50;
+    const winPos = options.position;
 
     // Open the new window roughly the height of the header away from the
     // previous window. This also ensures in multi monitor setups that the
     // new terminal is on the correct screen.
     const focusedWindow = BrowserWindow.getFocusedWindow() || app.getLastFocusedWindow();
-    if (focusedWindow) {
+    // In case of options defaults position and size, we should ignore the focusedWindow.
+    if (winPos !== undefined) {
+      [startX, startY] = winPos;
+    } else if (focusedWindow) {
       const points = focusedWindow.getPosition();
       const currentScreen = screen.getDisplayNearestPoint({x: points[0], y: points[1]});
 
@@ -103,13 +109,13 @@ app.on('ready', () => installDevExtensions(isDev).then(() => {
       minHeight: 190,
       minWidth: 370,
       titleBarStyle: 'hidden-inset',
-      title: 'HyperTerm',
+      title: 'Hyper.app',
       backgroundColor: toElectronBackgroundColor(cfg.backgroundColor || '#000'),
       transparent: true,
       icon: resolve(__dirname, 'static/icon.png'),
-      // we only want to show when the prompt
-      // is ready for user input
-      show: process.env.HYPERTERM_DEBUG || isDev,
+      // we only want to show when the prompt is ready for user input
+      // HYPERTERM_DEBUG for backwards compatibility with hyperterm
+      show: process.env.HYPER_DEBUG || process.env.HYPERTERM_DEBUG || isDev,
       x: startX,
       y: startY
     };
@@ -150,16 +156,17 @@ app.on('ready', () => installDevExtensions(isDev).then(() => {
       // If no callback is passed to createWindow,
       // a new session will be created by default.
       if (!fn) {
-        fn = win => win.rpc.emit('session add req');
+        fn = win => win.rpc.emit('termgroup add req');
       }
 
       // app.windowCallback is the createWindow callback
-      // that can be setted before the 'ready' app event
-      // and createWindow deifinition. It's exeuted in place of
+      // that can be set before the 'ready' app event
+      // and createWindow deifinition. It's executed in place of
       // the callback passed as parameter, and deleted right after.
       (app.windowCallback || fn)(win);
       delete (app.windowCallback);
 
+      fetchNotifications(win);
       // auto updates
       if (!isDev && process.platform !== 'linux') {
         AutoUpdater(win);
@@ -168,14 +175,17 @@ app.on('ready', () => installDevExtensions(isDev).then(() => {
       }
     });
 
-    rpc.on('new', ({rows = 40, cols = 100, cwd = process.env.HOME}) => {
+    rpc.on('new', ({rows = 40, cols = 100, cwd = process.env.HOME, splitDirection}) => {
       const shell = cfg.shell;
       const shellArgs = cfg.shellArgs && Array.from(cfg.shellArgs);
 
       initSession({rows, cols, cwd, shell, shellArgs}, (uid, session) => {
         sessions.set(uid, session);
         rpc.emit('session add', {
+          rows,
+          cols,
           uid,
+          splitDirection,
           shell: session.shell,
           pid: session.pty.pid
         });
@@ -197,7 +207,7 @@ app.on('ready', () => installDevExtensions(isDev).then(() => {
     });
 
     // TODO: this goes away when we are able to poll
-    // for the title ourseleves, instead of relying
+    // for the title ourselves, instead of relying
     // on Session and focus/blur to subscribe
     rpc.on('focus', ({uid}) => {
       const session = sessions.get(uid);
@@ -222,7 +232,6 @@ app.on('ready', () => installDevExtensions(isDev).then(() => {
 
     rpc.on('exit', ({uid}) => {
       const session = sessions.get(uid);
-
       if (session) {
         session.exit();
       } else {
@@ -238,10 +247,9 @@ app.on('ready', () => installDevExtensions(isDev).then(() => {
       win.maximize();
     });
 
-    rpc.on('resize', ({cols, rows}) => {
-      sessions.forEach(session => {
-        session.resize({cols, rows});
-      });
+    rpc.on('resize', ({uid, cols, rows}) => {
+      const session = sessions.get(uid);
+      session.resize({cols, rows});
     });
 
     rpc.on('data', ({uid, data}) => {
@@ -317,6 +325,7 @@ app.on('ready', () => installDevExtensions(isDev).then(() => {
 
     // the window can be closed by the browser process itself
     win.on('close', () => {
+      app.config.window.recordState(win);
       windowSet.delete(win);
       rpc.destroy();
       deleteSessions();
@@ -391,7 +400,7 @@ app.on('open-file', (event, path) => {
   } else if (!lastWindow && {}.hasOwnProperty.call(app, 'createWindow')) {
     app.createWindow(callback);
   } else {
-    // if createWindow not exists yet ('ready' event was not fired),
+    // If createWindow doesn't exist yet ('ready' event was not fired),
     // sets his callback to an app.windowCallback property.
     app.windowCallback = callback;
   }
@@ -401,7 +410,8 @@ function installDevExtensions(isDev) {
   if (!isDev) {
     return Promise.resolve();
   }
-  const installer = require('electron-devtools-installer'); // eslint-disable-line global-require
+  // eslint-disable-next-line import/no-extraneous-dependencies
+  const installer = require('electron-devtools-installer');
 
   const extensions = [
     'REACT_DEVELOPER_TOOLS',
